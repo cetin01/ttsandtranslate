@@ -1,123 +1,474 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Reading + Highlight + Tap Translate</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Read-Along Demo — Highlight, Sentence Translate, Long-press Dictionary, Level Colors</title>
 <style>
-    body { font-family: Arial; padding: 30px; line-height: 1.8; }
-    #text span { cursor: pointer; padding: 3px; border-radius: 4px; }
-    #text span.highlight { background: yellow; }
-    #popup {
-        position: absolute;
-        background: #333;
-        color: #fff;
-        padding: 8px 12px;
-        border-radius: 6px;
-        display: none;
-        z-index: 9999;
-        font-size: 14px;
-        max-width: 200px;
-    }
-    #readBtn {
-        padding: 10px 20px;
-        background: #0078ff;
-        color: #fff;
-        border: none;
-        border-radius: 6px;
-        cursor: pointer;
-        font-size: 16px;
-    }
+  :root{
+    --a1:#c8f7dc; /* pale green */
+    --a2:#d6e9ff; /* pale blue */
+    --b1:#fff2c2; /* pale orange */
+    --b2:#e8d6ff; /* pale purple */
+    --unknown:#f0f0f0;
+    --highlight: #ffd54f;
+    --accent: #0066cc;
+  }
+  body{font-family: Inter, system-ui, Arial; padding:20px; line-height:1.7; background:#fafafa; color:#111}
+  .controls{display:flex; gap:10px; align-items:center; margin-bottom:12px}
+  button{background:var(--accent); color:white; border:none; padding:10px 14px; border-radius:8px; cursor:pointer}
+  button.secondary{background:#666}
+  #textBox{padding:18px; background:white; border-radius:12px; box-shadow:0 6px 18px rgba(10,10,10,0.06); max-width:900px}
+  #text{font-size:18px}
+  #text span{cursor:pointer; padding:2px 4px; border-radius:4px; display:inline-block}
+  #text span.word-level-A1{background:var(--a1)}
+  #text span.word-level-A2{background:var(--a2)}
+  #text span.word-level-B1{background:var(--b1)}
+  #text span.word-level-B2{background:var(--b2)}
+  #text span.word-level-unknown{background:var(--unknown)}
+  #text span.highlight{outline:3px solid var(--highlight); box-shadow:0 4px 12px rgba(0,0,0,0.08)}
+
+  /* popup translate */
+  #translatePopup{position:absolute; display:none; z-index:9999; padding:10px 12px; background:#222; color:#fff; border-radius:8px; max-width:260px; font-size:15px}
+
+  /* long-press context modal */
+  #contextModal{position:fixed; inset:0; display:none; align-items:center; justify-content:center; z-index:10000}
+  #contextModal .modal-bg{position:absolute; inset:0; background:rgba(0,0,0,0.35)}
+  #contextModal .modal{position:relative; background:white; width:90%; max-width:760px; border-radius:12px; padding:18px; z-index:10001}
+  #contextModal h3{margin:0 0 8px}
+  .meta{font-size:13px; color:#555}
+  .definition{margin-top:10px}
+  .examples{margin-top:12px}
+  .small{font-size:13px; color:#666}
+
+  /* saved words list */
+  #savedList{margin-top:14px; font-size:14px}
+  #savedList .chip{display:inline-block; background:#eee; padding:6px 8px; border-radius:999px; margin:4px}
+
+  /* responsive */
+  @media (max-width:600px){ #text{font-size:16px} }
 </style>
 </head>
 <body>
+  <h2>Read-Along Demo — Highlight + Sentence Translate + Long-press Dictionary + Level Coloring</h2>
+  <div class="controls">
+    <button id="readBtn">🔊 Read Paragraph</button>
+    <button id="pauseBtn" class="secondary">⏸️ Pause</button>
+    <button id="stopBtn" class="secondary">⏹️ Stop</button>
+    <button id="translateSentenceBtn">🔁 Translate Current Sentence</button>
+    <label style="margin-left:8px" class="small">Voice rate: <input id="rate" type="range" min="0.6" max="1.4" step="0.05" value="1"></label>
+  </div>
 
-<h2>Reading Demo (Highlight + Tap Translate)</h2>
+  <div id="textBox">
+    <div id="text"></div>
+  </div>
 
-<button id="readBtn">🔊 Read Text</button>
+  <div id="translatePopup"></div>
 
-<p id="text"></p>
+  <!-- Context modal for long-press options and dictionary results -->
+  <div id="contextModal">
+    <div class="modal-bg"></div>
+    <div class="modal">
+      <div style="display:flex; justify-content:space-between; align-items:center">
+        <h3 id="ctxWord">Word</h3>
+        <div><button id="closeModal" class="secondary">Close</button></div>
+      </div>
+      <div class="meta">Level: <span id="ctxLevel">-</span> • <span id="ctxSavedStatus"></span></div>
+      <div class="definition" id="ctxDefinition">Loading definition...</div>
+      <div class="examples" id="ctxExamples"></div>
+      <div style="margin-top:12px; display:flex; gap:8px">
+        <button id="ctxTranslateSentence" class="secondary">Translate sentence</button>
+        <button id="ctxSaveWord">Save word</button>
+      </div>
+    </div>
+  </div>
 
-<div id="popup"></div>
+  <div id="savedListArea">
+    <h4>Saved words</h4>
+    <div id="savedList"><em>(none)</em></div>
+  </div>
 
 <script>
-const paragraph = `Learning English can be fun and enjoyable when you interact with the text. 
-You can listen to sentences, follow the highlighted words, 
-and tap any word to instantly see its meaning.`;
+/* =========================
+   DEMO: Single self-contained HTML
+   - Uses Web Speech API (speechSynthesis) and onboundary for accurate word timing when available
+   - Falls back to estimated timings when necessary
+   - Uses LibreTranslate for translations (sentence & word)
+   - Uses Free Dictionary API (dictionaryapi.dev) for definitions & examples
+   - Long-press (touch or mouse) opens modal with definition and options
+   - Basic word-level mapping for coloring (A1..B2). Expandable.
+   ========================= */
 
-const textContainer = document.getElementById("text");
+// ---------- Sample paragraph (editable) ----------
+const paragraph = `Learning English can be fun and enjoyable when you interact with the text. You can listen to sentences, follow the highlighted words, and tap or long-press any word to instantly see its meaning and examples. This demo shows synchronized highlighting using speech boundaries when the browser supports them, and a fallback timing-based approach otherwise.`.trim();
 
-// 🔹 Metni kelime kelime bölüp span içine koyuyoruz
-const words = paragraph.split(" ");
-words.forEach((w, i) => {
-    const span = document.createElement("span");
-    span.textContent = w + " ";
-    span.dataset.index = i;
-    span.dataset.word = w.replace(/[^a-zA-Z]/g, "");
-    textContainer.appendChild(span);
-});
+// ---------- Word-level map (tiny sample) ----------
+// You should expand this mapping using a fuller CEFR list for production.
+const wordLevels = {
+  // A1 common words
+  'learning':'A2','english':'A1','can':'A1','be':'A1','fun':'A1','and':'A1','you':'A1','the':'A1','is':'A1','this':'A1','any':'A2','word':'A2','see':'A1','listen':'A2','follow':'A2','highlighted':'B1','tap':'A2','long-press':'B2',
+  // B1/B2 examples
+  'synchronized':'B2','synchronised':'B2','boundary':'B2','support':'B1','fallback':'B2','approach':'B2'
+};
 
-// Popup gösterme
-const popup = document.getElementById("popup");
-function showPopup(x, y, tr) {
-    popup.style.left = x + "px";
-    popup.style.top = y + "px";
-    popup.innerText = tr;
-    popup.style.display = "block";
-
-    setTimeout(() => popup.style.display = "none", 3000);
+// color classname mapping helper
+function levelToClass(level){
+  if(!level) return 'word-level-unknown';
+  return 'word-level-' + (level || 'unknown');
 }
 
-// Kelime çeviri fonksiyonu
-async function translateWord(word) {
-    const res = await fetch("https://translate.astian.org/translate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            q: word,
-            source: "en",
-            target: "tr",
-            format: "text"
-        })
+// ---------- Helpers to sanitize words ----------
+function cleanWord(token){
+  return token.replace(/^\W+|\W+$/g, ''); // strip punctuation around
+}
+
+// ---------- Render paragraph into spans ----------
+const textEl = document.getElementById('text');
+let tokens = []; // each token: {text, clean, startChar, endChar}
+(function tokenize(){
+  // We'll split by space but keep punctuation attached to tokens for display.
+  const rawTokens = paragraph.split(/(\s+)/).filter(Boolean); // keep spaces tokens too
+  let charPos = 0;
+  let index = 0;
+  rawTokens.forEach(tok => {
+    if (/^\s+$/.test(tok)) {
+      // add whitespace as text node
+      const tn = document.createTextNode(tok);
+      textEl.appendChild(tn);
+      charPos += tok.length;
+      return;
+    }
+    const clean = cleanWord(tok).toLowerCase();
+    const span = document.createElement('span');
+    span.className = levelToClass(wordLevels[clean]);
+    span.textContent = tok;
+    span.dataset.index = index;
+    span.dataset.raw = tok;
+    span.dataset.clean = clean;
+    span.style.userSelect = 'text';
+    textEl.appendChild(span);
+
+    const start = charPos;
+    const end = charPos + tok.length;
+    tokens.push({text:tok, clean, startChar:start, endChar:end, el:span});
+
+    charPos = end;
+    index++;
+  });
+})();
+
+// ---------- Speech / Highlight sync ----------
+let utter = null;
+let speaking = false;
+let currentWordIndex = -1;
+let boundaryAvailable = false;
+let fallbackInterval = null;
+
+function clearHighlight(){
+  tokens.forEach(t=> t.el.classList.remove('highlight'));
+}
+
+function highlightIndex(i){
+  clearHighlight();
+  if(i>=0 && i<tokens.length){
+    tokens[i].el.classList.add('highlight');
+    // bring into view if necessary
+    tokens[i].el.scrollIntoView({behavior:'smooth', block:'center'});
+  }
+  currentWordIndex = i;
+}
+
+function speakParagraph(){
+  // Cancel any ongoing speech
+  speechSynthesis.cancel();
+  clearInterval(fallbackInterval);
+
+  utter = new SpeechSynthesisUtterance(paragraph);
+  utter.lang = 'en-US';
+  const rateSlider = document.getElementById('rate');
+  utter.rate = parseFloat(rateSlider.value) || 1.0;
+
+  // Build a simple mapping from char index to token index.
+  // Note: boundary events give charIndex relative to utter.text
+  const charToToken = new Array(paragraph.length).fill(-1);
+  tokens.forEach((tok, idx)=>{
+    for(let c=tok.startChar; c<tok.endChar && c<paragraph.length; c++) charToToken[c]=idx;
+  });
+
+  boundaryAvailable = false;
+
+  utter.onstart = () => {
+    speaking = true;
+    // try to detect boundary availability
+    // If onboundary fires at least once within 1s we'll consider it supported
+    let sawBoundary = false;
+    const boundaryListener = (ev) => { sawBoundary = true; }
+    utter.onboundary = (ev)=>{
+      // ev.charIndex is index in utter.text
+      sawBoundary = true;
+      boundaryAvailable = true;
+
+      const charIndex = ev.charIndex;
+      const tokenIdx = charToToken[charIndex] ?? -1;
+      if(tokenIdx>=0) highlightIndex(tokenIdx);
+    };
+    // set timeout to fallback if no boundary seen
+    setTimeout(()=>{
+      if(!sawBoundary){
+        // fallback: compute estimated durations per word
+        runFallbackTiming(utter.rate);
+      }
+    }, 600);
+  };
+
+  utter.onend = () => {
+    speaking = false;
+    clearInterval(fallbackInterval);
+    highlightIndex(-1);
+  };
+
+  // Some browsers dispatch boundary events for words; others may not.
+  try{
+    speechSynthesis.speak(utter);
+  }catch(err){
+    console.error('speech error', err);
+  }
+}
+
+function runFallbackTiming(rate){
+  // Estimate speaking duration by using average words-per-minute.
+  // Average conversational speech ~ 150 wpm at rate=1. We'll adjust by rate.
+  const words = tokens.map(t=>t.text).filter(t=>!/^\s+$/.test(t));
+  const wpmBase = 150 * rate;
+  const totalWords = words.length;
+  const estimatedTotalSeconds = (totalWords / wpmBase) * 60; // seconds
+  const perWordMs = (estimatedTotalSeconds * 1000) / totalWords;
+
+  let i = 0;
+  highlightIndex(-1);
+  fallbackInterval = setInterval(()=>{
+    if(i < tokens.length){
+      highlightIndex(i);
+      i++;
+    } else {
+      clearInterval(fallbackInterval);
+      highlightIndex(-1);
+    }
+  }, perWordMs);
+}
+
+// ---------- Controls ----------
+document.getElementById('readBtn').addEventListener('click', ()=>{
+  speakParagraph();
+});
+document.getElementById('pauseBtn').addEventListener('click', ()=>{
+  if(speechSynthesis.paused) speechSynthesis.resume(); else speechSynthesis.pause();
+});
+document.getElementById('stopBtn').addEventListener('click', ()=>{
+  speechSynthesis.cancel(); clearInterval(fallbackInterval); highlightIndex(-1);
+});
+
+// ---------- Translate single word popup on click (short tap) ----------
+const popup = document.getElementById('translatePopup');
+let popupTimeout = null;
+function showPopup(x,y,text){
+  popup.textContent = text;
+  popup.style.left = (x+8)+'px';
+  popup.style.top = (y+8)+'px';
+  popup.style.display = 'block';
+  clearTimeout(popupTimeout);
+  popupTimeout = setTimeout(()=> popup.style.display='none', 3500);
+}
+
+async function translateText(q){
+  try{
+    const res = await fetch('https://translate.astian.org/translate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({q, source:'en', target:'tr', format:'text'})
+    });
+    const jd = await res.json();
+    return jd.translatedText || '(no translation)';
+  }catch(e){
+    console.warn('translate failed', e);
+    return '(translation error)';
+  }
+}
+
+// Single click shows quick translation
+textEl.addEventListener('click', async (ev)=>{
+  const span = ev.target.closest('span');
+  if(!span || !span.dataset.clean) return;
+  const clean = span.dataset.clean;
+  if(!clean) return;
+  const tr = await translateText(clean);
+  showPopup(ev.pageX, ev.pageY, tr);
+});
+
+// ---------- Sentence translation button ----------
+// Finds the sentence containing the current highlighted word (or first sentence), translates it and shows in popup
+function getSentenceContainingToken(idx){
+  // simple sentence splitter by punctuation (.!?), using paragraph string positions
+  const sents = paragraph.match(/[^.!?]+[.!?]?/g) || [paragraph];
+  let charCursor = 0;
+  for(let i=0;i<sents.length;i++){
+    const s = sents[i];
+    const start = charCursor;
+    const end = charCursor + s.length;
+    // if token's startChar within this range
+    if(idx>=0 && idx<tokens.length){
+      const t = tokens[idx];
+      if(t.startChar >= start && t.endChar <= end) return {sent:s.trim(), start, end};
+    }
+    charCursor = end;
+  }
+  // fallback: first sentence
+  return {sent: sents[0].trim(), start:0, end: sents[0].length};
+}
+
+async function translateCurrentSentence(){
+  const idx = currentWordIndex >=0 ? currentWordIndex : 0;
+  const info = getSentenceContainingToken(idx);
+  const tr = await translateText(info.sent);
+  showPopup(window.innerWidth/2 - 100, window.innerHeight/2 - 20, tr);
+}
+
+document.getElementById('translateSentenceBtn').addEventListener('click', translateCurrentSentence);
+
+// ---------- Long-press to open context modal with dictionary info ----------
+let pressTimer = null;
+let pressTarget = null;
+const contextModal = document.getElementById('contextModal');
+const ctxWordEl = document.getElementById('ctxWord');
+const ctxLevelEl = document.getElementById('ctxLevel');
+const ctxDefinitionEl = document.getElementById('ctxDefinition');
+const ctxExamplesEl = document.getElementById('ctxExamples');
+const ctxSavedStatus = document.getElementById('ctxSavedStatus');
+
+function openContextForSpan(span){
+  if(!span) return;
+  const clean = span.dataset.clean;
+  ctxWordEl.textContent = span.dataset.raw || clean;
+  ctxLevelEl.textContent = wordLevels[clean] || 'unknown';
+  ctxDefinitionEl.textContent = 'Loading definition...';
+  ctxExamplesEl.innerHTML = '';
+  ctxSavedStatus.textContent = isSaved(clean) ? 'Saved' : 'Not saved';
+
+  // show modal
+  contextModal.style.display = 'flex';
+
+  // fetch definition
+  fetchDefinition(clean).then(defData => {
+    if(!defData) {
+      ctxDefinitionEl.textContent = 'No definition found.';
+      return;
+    }
+    // definition may have meanings array
+    const parts = [];
+    defData.meanings && defData.meanings.forEach(m => {
+      const part = document.createElement('div');
+      part.innerHTML = `<strong>${m.partOfSpeech}</strong>:`;
+      m.definitions.slice(0,3).forEach(d => {
+        const p = document.createElement('div');
+        p.textContent = '– ' + d.definition + (d.example ? (' (e.g. "'+d.example+'")') : '');
+        part.appendChild(p);
+      });
+      parts.push(part);
     });
 
-    const data = await res.json();
-    return data.translatedText;
+    ctxDefinitionEl.innerHTML = '';
+    parts.forEach(p=> ctxDefinitionEl.appendChild(p));
+
+    // examples (collect top examples)
+    const exs = [];
+    defData.meanings && defData.meanings.forEach(m => {
+      m.definitions.forEach(d=>{ if(d.example) exs.push(d.example); });
+    });
+    if(exs.length){
+      ctxExamplesEl.innerHTML = '<strong>Examples</strong>';
+      const ul = document.createElement('ul'); ul.style.marginTop='6px';
+      exs.slice(0,5).forEach(x=>{ const li = document.createElement('li'); li.textContent = x; ul.appendChild(li); });
+      ctxExamplesEl.appendChild(ul);
+    }
+  });
 }
 
-// 🔹 Kelimeye tıklayınca çeviri popup
-textContainer.addEventListener("click", async (e) => {
-    if (e.target.tagName !== "SPAN") return;
-    const word = e.target.dataset.word;
-    if (!word) return;
+// long-press detection (works with mouse + touch)
+textEl.addEventListener('touchstart', (e)=>{
+  const t = e.target.closest('span');
+  if(!t) return;
+  pressTarget = t;
+  pressTimer = setTimeout(()=>{ openContextForSpan(t); }, 600);
+});
+textEl.addEventListener('touchend', (e)=>{ clearTimeout(pressTimer); pressTimer=null; });
 
-    const tr = await translateWord(word);
-    showPopup(e.pageX, e.pageY, tr);
+textEl.addEventListener('mousedown', (e)=>{
+  if(e.button !== 0) return;
+  const t = e.target.closest('span');
+  if(!t) return;
+  pressTarget = t;
+  pressTimer = setTimeout(()=>{ openContextForSpan(t); }, 700);
+});
+textEl.addEventListener('mouseup', (e)=>{ if(pressTimer){ clearTimeout(pressTimer); pressTimer=null; } });
+textEl.addEventListener('mouseleave', ()=>{ if(pressTimer){ clearTimeout(pressTimer); pressTimer=null; } });
+
+// close modal
+document.getElementById('closeModal').addEventListener('click', ()=>{ contextModal.style.display='none'; });
+
+// context modal buttons
+document.getElementById('ctxTranslateSentence').addEventListener('click', async ()=>{
+  // translate sentence containing this word (use the word from modal)
+  const wordText = ctxWordEl.textContent;
+  // find token index for this word (first match)
+  const idx = tokens.findIndex(t => t.clean === cleanWordSimple(wordText));
+  if(idx>=0){
+    const info = getSentenceContainingToken(idx);
+    const tr = await translateText(info.sent);
+    alert('Sentence translation:\n' + tr);
+  } else alert('Sentence not found.');
 });
 
-// 🔹 Metni okuma ve highlight sistemi
-document.getElementById("readBtn").addEventListener("click", () => {
-    let i = 0;
+function cleanWordSimple(s){ return s.toLowerCase().replace(/[^a-z]/g,''); }
 
-    const utter = new SpeechSynthesisUtterance(paragraph);
-    utter.lang = "en-US";
-    utter.rate = 1;
+// Save word feature
+function savedWordsKey(){ return 'demo_saved_words_v1'; }
+function getSavedWords(){ try{ return JSON.parse(localStorage.getItem(savedWordsKey())||'[]') }catch(e){return []} }
+function isSaved(clean){ return getSavedWords().includes(clean); }
+function toggleSave(clean){ const arr = getSavedWords(); const i=arr.indexOf(clean); if(i>=0){ arr.splice(i,1); } else { arr.push(clean); } localStorage.setItem(savedWordsKey(), JSON.stringify(arr)); renderSavedList(); ctxSavedStatus.textContent = isSaved(clean) ? 'Saved' : 'Not saved'; }
 
-    // Her kelimeden önce highlight
-    const interval = setInterval(() => {
-        document.querySelectorAll("#text span").forEach(s => s.classList.remove("highlight"));
-        
-        if (i < words.length) {
-            document.querySelector(`#text span[data-index='${i}']`)
-                .classList.add("highlight");
-            i++;
-        } else {
-            clearInterval(interval);
-        }
-    }, 450); // Ortalama hız (kelime başına)
-
-    speechSynthesis.speak(utter);
+document.getElementById('ctxSaveWord').addEventListener('click', ()=>{
+  const w = ctxWordEl.textContent; toggleSave(cleanWordSimple(w));
 });
+
+function renderSavedList(){
+  const listEl = document.getElementById('savedList');
+  const arr = getSavedWords();
+  listEl.innerHTML = '';
+  if(arr.length===0){ listEl.innerHTML = '<em>(none)</em>'; return; }
+  arr.forEach(c=>{ const chip = document.createElement('span'); chip.className='chip'; chip.textContent = c; listEl.appendChild(chip); });
+}
+renderSavedList();
+
+// ---------- Fetch definition from Free Dictionary API (dictionaryapi.dev) ----------
+async function fetchDefinition(word){
+  if(!word) return null;
+  try{
+    const r = await fetch('https://api.dictionaryapi.dev/api/v2/entries/en/' + word);
+    if(!r.ok) return null;
+    const j = await r.json();
+    // j is an array; return first entry
+    return j[0];
+  }catch(e){ console.warn('dict fetch failed',e); return null; }
+}
+
+// ---------- Utility: map word tokens to sentence indices earlier used ----------
+// (already used in getSentenceContainingToken)
+
+// ---------- Initialize: attach quick tooltip hide on outside click ----------
+document.addEventListener('click', (e)=>{
+  if(!e.target.closest('#translatePopup')) popup.style.display='none';
+});
+
+// ---------- End of script ----------
 </script>
-
 </body>
 </html>
